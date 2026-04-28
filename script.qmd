@@ -1,0 +1,414 @@
+---
+title: "Análise Discriminante em Detecção de Risco de Crédito"
+author: 'Emanuel Franklin Passos Simões - 23.2.4009'
+format: pdf
+editor: visual
+---
+
+# Introdução
+
+A análise discriminante consiste são técnicas estatísticas que combinam duas ou mais variáveis em grupos definidos previamente, com o objetivo de classificar as variáveis a partir de pesos que maximizam a diferença entre os grupos (Joseph et al., 2009, p. 224).
+
+Diante disso, o presente trabalho consiste na realização de uma análise discriminante para fazer uma análise de risco de uma instituição financeira, para identificar clientes com alto risco de inadimplência, com o objetivo de desenvolver um sistema de classificação.
+
+# Materiais e métodos
+
+A base de dados [dados_risco.csv](https://www.professortp.com.br/est014/dados/dados_risco.csv) possui 550 observações, de modo que cada uma corresponde a um cliente, e 7 variáveis, que são:
+
+-   `valor_limite`: limite total de crédito disponível;
+
+-   `dias_atraso_medio`: média de dias de atraso nos últimos 12 meses;
+
+-   `qt_atrasos_12m`: número de atrasos registrados;
+
+-   `ratio_divida_renda`: razão dívida/renda mensal;
+
+-   `dist_agencia_resid`: distância entre residência e agência mais próxima;
+
+-   `mudancas_endereco_6m`: mudanças de endereço recentes;
+
+-   `classe`: população (Adimplente ou Risco).
+
+Os métodos que serão aplicados são a análise exploratória e análise discriminante.
+
+# Resultados e discussão
+
+Este tópico apresenta a análise descritiva dos dados, a aplicação da análise discriminante e uma breve discussão sobre cada análise.
+
+```{r, include = FALSE}
+rm(list=ls())
+Sys.setlocale("LC_TIME", "pt_BR.UTF-8")
+```
+
+```{r}
+## Instalação e importação de pacotes ---------------------------------------
+
+if (!requireNamespace("pacman", quietly = TRUE)) {
+  install.packages("pacman")
+}
+
+pacman::p_load(biotools, caret, corrplot, RColorBrewer, skimr, tidyverse)
+```
+
+```{r}
+## Importação dos dados -----------------------------------------------------
+dados <- read.csv('tabelas/dados_risco.csv')
+dados$classe <- factor(dados$classe)
+head(dados)
+```
+
+## Análise descritiva
+
+O tópico abrange um resumo dos dados com análise da estrutura, as distribuições, boxplots, relações bivariadas e matrizes de correlação por grupo, acrescentado de breves discussões.
+
+### Visão geral
+
+```{r}
+skim(dados)
+```
+
+A primeira vista, percebe-se que os dados possuem escalas diferentes. O valor limite, por tratar-se de valores financeiros altos, está em uma escala bem superior as demais. Essa informação é relevante para a análise, pois a análise depende da distância, portanto é crucial que os dados estejam na mesma escala. Ademais, não há valores ausentes na base de dados.
+
+Observa-se que todas as distribuições, com excessão da `ratio_divida_renda`, possuem forte assimetria à direita. Isso sugere a possível existência de valores discrepantes. Como a análise não exige normalidade nem comparação de médias, não será feito uma transformação de variáveis. Outro ponto é que não detectou-se variáveis com distribuições heterogêneas, o que pode ser um indício de ausência de agrupamentos ou presença de poucos agrupamentos.
+
+### Distribuições
+
+```{r}
+dados_long <- dados %>%
+  pivot_longer(-classe, names_to = "variavel", values_to = "valor")
+
+ggplot(dados_long, aes(x = valor, fill = classe)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~ variavel, scales = "free", ncol = 3) +
+  theme_minimal(base_size = 13) +
+  labs(title = "Distribuições das variáveis por população",
+       x = "Valor", y = "Densidade")
+```
+
+Quanto aos dias de atraso médio mensal, mudanças de endereço recente, número de atrasos registrados, razão da dívida com a renda mensal, observa-se que os adimplentes possuem uma frequência percentual maior em poucos dias de atraso, enquanto clientes classificados como risco possuem frequência percentual maior em vários dias de atraso. O que significa que as variáveis parecem estar bem definidas, indo além da própria aleatoriedade. Isso favorece a tentativa de fazer uma análise discriminante para classificar novos clientes.
+
+Verificou-se que a distância entre a agência e a residência do cliente é bastante semelhante nas duas classes, assim como o limite total de crédito disponível.
+
+### Boxplots
+
+```{r}
+ggplot(dados_long, aes(x = classe, y = valor, fill = classe)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.3) +
+  facet_wrap(~ variavel, scales = "free", ncol = 3) +
+  theme_minimal(base_size = 13) +
+  labs(title = "Boxplots comparativos entre Regular e Suspeito",
+       x = "", y = "Valor")
+```
+
+A partir da análise dos boxplots, percebe-se que a classe adimplente possui medianas menores em todas as variáveis, com exceção da `valor_limite`. Portanto, há mais evidências de que a estrutura está bem definida.
+
+### Relações bivariadas
+
+```{r}
+ggplot(dados, aes(x = ratio_divida_renda,
+               y = dias_atraso_medio,
+               color = classe)) +
+  geom_point(alpha = 0.5) +
+  stat_ellipse(type = "norm", linewidth = 1.1) +
+  theme_minimal(base_size = 13) +
+  labs(title = "Relação bivariada com elipses gaussianas",
+       x = "Ratio divida/renda",
+       y = "Dias atraso médio")
+```
+
+A partir da análise da relação bivariada entre as variáveis `ratio_divida_renda` e `dias_atraso_medio`, verificou-se a presença de duas populações com posições e dispersões diferentes. A classe Risco possui uma dispersão maior do que a classe Adimplente. Porém, como há uma grande região de sobreposição entre as variáveis, vale fazer uma análise multivariada para captar melhor a estrutura discriminante dos dados.
+
+### Projeção PCA das duas populações
+
+```{r}
+X_scaled <- scale(dados[, -7])
+pca <- prcomp(X_scaled)
+
+pca_df <- data.frame(pca$x[,1:2], classe = dados$classe)
+
+ggplot(pca_df, aes(PC1, PC2, color = classe)) +
+  geom_point(alpha = 0.6) +
+  stat_ellipse(type = "norm") +
+  theme_minimal(base_size = 13) +
+  labs(title = "Projeção PCA das duas populações",
+       x = "PC1", y = "PC2")
+```
+
+A análise de componentes principais reforça a diferença entre as classes Adimplente e Risco, de modo que Risco possui uma variabilidade maior e centróide numa posição diferente da classe Adimplente. Porém, as classes ainda estão sobrepostas, portanto, vale partir para uma análise discriminante supervisionada para melhorar a capacidade de classificação.
+
+### Gráfico de cores com matriz de correlação
+
+**Adimplente**
+
+```{r}
+cor_adimplente <- dados %>%
+  filter(classe == 'Adimplente') %>%
+  dplyr::select(-classe) %>%
+  cor()
+
+corrplot(
+  cor_adimplente,
+  method = "color",
+  addCoef.col = "black",
+  tl.col = "black",
+  tl.srt = 45
+)
+```
+
+**Risco**
+
+```{r}
+cor_risco <- dados %>%
+  filter(classe == 'Risco') %>%
+  dplyr::select(-classe) %>%
+  cor()
+
+corrplot(
+  cor_risco,
+  method = "color",
+  addCoef.col = "black",
+  tl.col = "black",
+  tl.srt = 45
+)
+```
+
+O gráfico de cores com matriz de covariância é uma ótima ferramenta para visualizar se há correlações entre variáveis e até estruturas latentes. Observou-se que a única correlação moderada é a de `ratio_divida_renda` e `dias_atraso_medio`, portanto é visível que pessoas que costumam atrasar o pagamento muitas vezes possuem uma dívida alta em comparação com a renda. As demais correlações são muito baixas para trazer uma interpretação.
+
+## Verificar suposições
+
+Foi feito a aplicação do teste de Box (Box’s M) e comparação das matrizes de covariância das populações.
+
+### Teste de Box
+
+```{r}
+#H_0: Sigma_R = Sigma_S = Sigma
+
+box_res <- biotools::boxM(dados[, -7], dados$classe)
+box_res
+```
+
+Como p-valor é extremamente baixo, isso significa que há evidência de diferença entre as matrizes, o que significa que as populações possivelmente apresentam estuturas de variação distintas.
+
+### Comparação direta das covariâncias
+
+```{r}
+cov_adimplente <- cov(dados[dados$classe == "Adimplente", -7])
+cov_adimplente
+```
+
+```{r}
+cov_risco <- cov(dados[dados$classe == "Risco", -7])
+cov_risco
+```
+
+```{r}
+cov_risco - cov_adimplente
+```
+
+Observa-se que, com excessão da covariância da variável `valor_limite`, das variáveis `valor_limite` e `mudanças_endereço_6m`, das variáveis `mudanças_endereço_6m` e `qt_atrasos_12m` e das variáveis `mudanças_endereço_6m` e `ratio_divida_renda`, em todas as outras o valor da covariância da classe Risco é maior. Percebe-se que há evidência de que tanto o `valor_limite` quanto a `mudanças_endereço_6m` não são tão relevantes para avaliar o risco de inadimplência. Além disso, reparou-se que o fato da estrutura da classe Risco ter covariância predominantemente maior, reflete que a estrutura é mais dispersa e menos estável.
+
+## Ajuste dos modelos discriminantes
+
+Será feito o ajuste a partir do método da ressubstituição, método divisão treino / teste (ressubstituição com divisão amostral) e Validação cruzada. Para todos os métodos será aplicado tanto a análise discriminante linear quanto a análise discriminante quadrática, bem como a avaliação de cada um.
+
+### Método da ressubstituição
+
+#### Função discriminante linear (LDA)
+
+```{r}
+X_scaled <- scale(dados[, -7])
+df_scaled <- data.frame(classe = dados$classe, X_scaled)
+
+fit_lda <- MASS::lda(classe ~ ., data = df_scaled)
+fit_qda <- MASS::qda(classe ~ ., data = df_scaled)
+
+fit_lda
+```
+
+Dado o desbalanceamento da proporção de dados classificados como Adimplentes e Risco, foi definido a probabilidade de 0.7 para o grupo de Adimplentes e 0.3 para o grupo de Risco.
+
+Quanto às médias padronizadas, apenas a média da variável `valor_limite` da classe Risco é inferior a da classe Adimplente. Isso implica que a classe Risco há maior exposição.
+
+Quanto aos coeficientes da função discriminante (LD1), percebe-se que os das variáveis `ratio_divida_renda` e `qt_atrasos_12m` possuem maior contribuição na separação dos grupos, enquanto as demais possuem contribuição menor, com exceção da variável `valor_limite`, que possui contribuição negativa.
+
+Portanto, a razão dívida / renda mensal e a quantidade de atrasos registrados nos últimos 12 meses são as características principais para analisar a separação dos dois grupos, conforme a função discriminante linear do método da ressubstituição.
+
+```{r}
+# Obter projeções LD1
+lda_proj <- predict(fit_lda)$x
+
+dados_plot <- dados %>%
+  mutate(LD1 = lda_proj[,1])
+
+# --------------------------------------------------
+# Gráfico das densidades na direção discriminante
+# --------------------------------------------------
+ggplot(dados_plot, aes(x = LD1, fill = classe, color = classe)) +
+  geom_density(alpha = 0.35, linewidth = 1.2) +
+  geom_vline(
+    data = dados_plot %>% 
+      group_by(classe) %>% 
+      summarise(m = mean(LD1)),
+    aes(xintercept = m, color = classe),
+    linetype = "dashed",
+    linewidth = 1.1
+  ) +
+  labs(
+    title = "Projeção na Função Discriminante Linear (LD1)",
+    x = "Score discriminante (LD1)",
+    y = "Densidade"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "top"
+  )
+```
+
+Diante desse gráfico da densidade de LD1, percebe-se a diferença entre as classes Adimplente e Risco, de modo que a classe Adimplente se concentra nos valores menores, enquanto a classe Risco se distribui nos valores maiores. Observa-se também que mesmo que há sobreposição, por terem a média bem separada, as classes possuem um bom poder discriminante.
+
+**Avaliação do modelo linear**
+
+```{r}
+pred_lda_resub <- predict(fit_lda)$class
+
+conf_lda_resub <- confusionMatrix(pred_lda_resub, factor(dados$classe), positive = 'Risco')
+conf_lda_resub
+```
+
+A acurácia da função discriminante linear obtida foi de 78,73%, com um p-valor \< 0.001, ou seja, estatísticamente significativo. Também percebe-se elevada especificidade (0.9299), indicando que o modelo é bom em detectar corretamente os clientes da classe Adimplente. Já a sensibilidade é moderada (0.4545), o que indica maior dificuldade em detectar os casos da classe Risco. O valor Kappa obtido foi de 0.4315, o que indica concordância moderada entre as predições e as classes reais. Já a acurácia balanceada (0,6922) indica que o desempenho não é uniforme entre as classes. No geral, o modelo possui bom desempenho, mas necessita de ajustes dependendo das prioridades.
+
+#### Função discriminante quadrática (QDA)
+
+```{r}
+fit_qda
+```
+
+x
+
+```{r}
+pred_qda_resub <- predict(fit_qda)$class
+
+conf_qda_resub <- confusionMatrix(pred_qda_resub, factor(dados$classe), positive = 'Risco')
+conf_qda_resub
+```
+
+Em comparação com a função discriminante linear, o quadrático foi melhor apenas na sensibilidade (0.4667 de 0.4545).
+
+### Divisão treino / teste
+
+```{r}
+set.seed(12345)
+
+train_id <- createDataPartition(dados$classe, p = 0.7, list = FALSE)
+
+train <- dados[train_id, ]
+test  <- dados[-train_id, ]
+```
+
+Em conformidade com as probabilidades definidas anteriormente, estabeleceu-se 70% dos dados para treino e 30% para teste.
+
+```{r}
+prop.table(table(dados$classe))
+```
+
+```{r}
+prop.table(table(train$classe))
+```
+
+```{r}
+prop.table(table(test$classe))
+```
+
+```{r}
+preproc <- preProcess(train[, -7], method = c("center","scale"))
+
+train_scaled <- predict(preproc, train)
+test_scaled  <- predict(preproc, test)
+```
+
+```{r}
+fit_lda <- lda(classe ~ ., data = train_scaled)
+
+fit_lda
+```
+
+#### Função discriminante linear (LDA)
+
+```{r}
+pred_lda_test <- predict(fit_lda, newdata = test_scaled)$class
+
+conf_lda_test <- confusionMatrix(pred_lda_test,
+                                 factor(test_scaled$classe),
+                                 positive = "Risco")
+conf_lda_test
+```
+
+Já nesse caso, obteve-se valores tanto de Acurácia, Kappa, sensibilidade e especificidade superiores aos anteriores.
+
+#### Função discriminante quadrática (QDA)
+
+```{r}
+fit_qda <- qda(classe ~ ., data = train_scaled)
+fit_qda
+```
+
+Avaliação do modelo quadrático
+
+```{r}
+pred_qda_test <- predict(fit_qda, newdata = test_scaled)$class
+
+conf_qda_test <- confusionMatrix(pred_qda_test,
+                                 factor(test_scaled$classe),
+                                 positive = "Risco")
+
+conf_qda_test
+```
+
+Nesse caso, obteve-se desempenho inferior ao anterior.
+
+### Validação cruzada
+
+#### Função discriminante linear (LDA)
+
+```{r}
+train_control <- trainControl(method = "cv", number = 10)
+
+lda_cv <- train(classe ~ ., data = train_scaled, method = "lda", trControl = train_control)
+
+lda_cv$finalModel
+```
+
+Avaliação do modelo linear
+
+```{r}
+lda_cv$results
+```
+
+A avaliação do modelo linear para o caso da validação cruzada apresentou resultados inferiores aos demais.
+
+#### Função discriminante quadrática (QDA)
+
+```{r}
+qda_cv <- train(classe ~ ., data = train_scaled, method = "qda", trControl = train_control)
+
+qda_cv$finalModel
+```
+
+Avaliação do modelo quadrático
+
+```{r}
+qda_cv$results
+```
+
+Nesse caso, obteve-se um desempenho inferior aos demais.
+
+# Conclusões
+
+Percebeu-se a importância da análise exploratória para buscar evidências de que a análise proposta faz sentido. Essa percepção foge à análise descritiva simples, pois exige investigação e interpretação, que são habilidades super necessárias para um analista de dados competente.
+
+Quanto à análise discriminante, observou-se que o modelo linear teve resultados melhores do que o quadrático, em especial na divisão treino / teste.
+
+# Referências bibliográficas
+
+HAIR, Joseph F. et al. **Análise multivariada de dados**. Bookman editora, 2009.
